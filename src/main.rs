@@ -1,6 +1,9 @@
+mod tokenring;
+
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use threadpool::ThreadPool;
+use crate::tokenring::{Token, TokenRing};
 
 enum Message {
     NUMBER(u64),
@@ -37,18 +40,34 @@ fn consumer(rx: Receiver<Message>) {
     }
 }
 
+fn node(rx: Receiver<Token>, tx: Sender<Token>) {
+    while let Ok(token) = rx.recv() {
+        match token {
+            Token::SHUTDOWN => {
+                break;
+            }
+            _ => {
+                tx.send(token).unwrap();
+            }
+        }
+    };
+}
 
 fn main() {
     println!("Hello, world!");
 
+    let ring = TokenRing::new(10, node);
+    ring.tx.send(Token::TEXT(format!("Hello Token Ring!"))).unwrap();
+    ring.tx.send(Token::SHUTDOWN).unwrap();
 
-    let pool = ThreadPool::new(4);
-    let (producer_out, mapper_in) = mpsc::channel();
-    let (mapper_out, consumer_in) = mpsc::channel();
 
-    pool.execute(move || producer(producer_out));
-    pool.execute(move || mapper(mapper_in, mapper_out));
-    pool.execute(move || consumer(consumer_in));
+    while let Ok(token) = ring.rx.recv() {
+        if let Token::SHUTDOWN = token {
+            println!("Shutdown token ring.");
+            break;
+        }
+        println!("Received: {token:?}");
+    }
 
-    pool.join();
+    ring.join();
 }
