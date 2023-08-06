@@ -113,7 +113,7 @@ impl Node {
     }
 
     fn run(&mut self) {
-        while let Ok((src, token)) = self.recv() {
+        while let Ok((route_type, token)) = self.recv() {
             match token {
                 Token::INIT(new_id) => {
                     if let None = self.id {
@@ -137,7 +137,9 @@ impl Node {
                 Token::SHUTDOWN => {
                     debug!("Shutdown {}", self.node_name());
                     self.forward(token, RouteType::INTERNAL).unwrap();
-                    break;
+                    if route_type == RouteType::INTERNAL {
+                        break;
+                    }
                 }
                 Token::PING(src, dst) => {
                     debug!("{} forwarded ping to dst {dst}", self.node_name());
@@ -174,7 +176,7 @@ impl Node {
                 }
                 _ => {
                     debug!("{} forwards {token:?}", self.node_name());
-                    let dst = if src == RouteType::INTERNAL || src == RouteType::BROADCAST {
+                    let dst = if route_type == RouteType::INTERNAL || route_type == RouteType::BROADCAST {
                         RouteType::BROADCAST
                     } else {
                         RouteType::INTERNAL

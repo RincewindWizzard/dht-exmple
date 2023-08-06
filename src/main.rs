@@ -19,9 +19,10 @@ fn main() {
         .init()
         .unwrap();
 
+    let node_count = 10;
     // construct a token ring
     let mut nodes = vec![Node::new()];
-    for i in 1..10 {
+    for i in 1..node_count {
         let node = Node::new();
         nodes[i - 1].connect(&node).unwrap();
         nodes.push(node);
@@ -34,11 +35,16 @@ fn main() {
     thread::sleep(Duration::from_millis(1000));
 
     let (tx, rx) = node.channel();
-    node.ping(5).unwrap();
-    thread::sleep(Duration::from_millis(1000));
-    let token = rx.recv().unwrap();
-    println!("Received {token:?}");
+    for i in 0..node_count {
+        node.ping(i).unwrap();
+    }
     node.shutdown().unwrap();
+
+    thread::sleep(Duration::from_millis(1000));
+
+    while let Ok(token) = rx.recv() {
+        println!("Received {token:?}");
+    }
 
     for node in nodes {
         node.join().unwrap();
