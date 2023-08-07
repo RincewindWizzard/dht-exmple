@@ -1,3 +1,7 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::iter::Map;
 use std::sync::mpsc::channel;
 use std::thread;
 use std::thread::JoinHandle;
@@ -6,6 +10,8 @@ use log::debug;
 use crate::tokenring::Token::{ConnectRx, ConnectTx};
 
 type NodeId = usize;
+type Key = String;
+type Value = String;
 
 
 #[derive(Debug, Clone)]
@@ -16,6 +22,9 @@ pub enum Token {
     INIT(NodeId),
     PING(NodeId, NodeId),
     PONG(NodeId, NodeId),
+    STORE(Key, Value),
+    RETRIEVE(Key),
+    RETRIEVED(Key, Value),
     ConnectTx(Sender<Token>),
     ConnectRx(Receiver<Token>),
     SHUTDOWN,
@@ -30,6 +39,9 @@ fn is_internal(token: &Token) -> bool {
         Token::SHUTDOWN => { true }
         Token::ConnectTx(_) => { true }
         Token::ConnectRx(_) => { true }
+        Token::STORE(_, _) => { true }
+        Token::RETRIEVE(_) => { true }
+        Token::RETRIEVED(_, _) => { false }
     }
 }
 
@@ -74,13 +86,32 @@ impl NodeHandle {
         self.tx.send(Token::PING(0, dst))
     }
     pub fn init(&self) -> Result<(), SendError<Token>> {
-        self.tx.send(Token::INIT(1))
+        self.tx.send(Token::INIT(0))
     }
     pub fn shutdown(&self) -> Result<(), SendError<Token>> {
         self.tx.send(Token::SHUTDOWN)
     }
+    pub fn store<K, V>(&self, key: K, value: V) -> Result<(), SendError<Token>>
+        where
+            K: ToString,
+            V: ToString
+    {
+        self.tx.send(Token::STORE(key.to_string(), value.to_string()))
+    }
+    pub fn load<K>(&self, key: K) -> Result<(), SendError<Token>>
+        where
+            K: ToString,
+    {
+        self.tx.send(Token::RETRIEVE(key.to_string()))
+    }
 }
 
+fn get_node_in_charge(key: &Key, ring_size: usize) -> NodeId {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    let hash = hasher.finish();
+    (hash % (ring_size as u64)) as NodeId
+}
 
 impl Node {
     pub fn new() -> NodeHandle {
@@ -112,7 +143,10 @@ impl Node {
         }
     }
 
+
     fn run(&mut self) {
+        let mut ring_size = 0;
+        let mut database = HashMap::new();
         while let Ok((route_type, token)) = self.recv() {
             match token {
                 Token::INIT(new_id) => {
@@ -121,7 +155,11 @@ impl Node {
                         debug!("initialized {}", self.node_name());
                         self.forward(Token::INIT(new_id + 1), RouteType::INTERNAL).unwrap();
                     } else {
-                        self.forward(token, RouteType::INTERNAL).unwrap();
+                        if new_id != ring_size {
+                            ring_size = new_id;
+                            debug!("{} sets ring size {}", self.node_name(), new_id);
+                            self.forward(token, RouteType::INTERNAL).unwrap();
+                        }
                     }
                 }
                 Token::ConnectRx(rx) => {
@@ -143,10 +181,13 @@ impl Node {
                 }
                 Token::PING(src, dst) => {
                     debug!("{} forwarded ping to dst {dst}", self.node_name());
+
                     if let Some(id) = self.id {
-                        let src = if src == 0 {
+                        let src = if route_type == RouteType::EXTERNAL {
                             id
-                        } else { src };
+                        } else {
+                            src
+                        };
 
                         if id == dst {
                             let (src, dst) = (dst, src);
@@ -172,6 +213,37 @@ impl Node {
                         } else {
                             self.forward(token, RouteType::INTERNAL).unwrap();
                         }
+                    }
+                }
+                Token::STORE(key, value) => {
+                    if let Some(id) = self.id {
+                        if ring_size > 0 && get_node_in_charge(&key, ring_size) == id {
+                            debug!("{} stores \"{key}\" -> \"{value}\"", self.node_name());
+                            database.insert(key, value);
+                        } else {
+                            debug!("{} forwards storing \"{key}\" -> \"{value}\"", self.node_name());
+                            self.forward(Token::STORE(key, value), RouteType::INTERNAL).unwrap();
+                        }
+                    } else {
+                        debug!("{} forwards storing \"{key}\" -> \"{value}\"", self.node_name());
+                        self.forward(Token::STORE(key, value), RouteType::INTERNAL).unwrap();
+                    }
+                }
+                Token::RETRIEVE(key) => {
+                    if let Some(value) = database.get(&key) {
+                        debug!("{} loads \"{key}\" -> \"{value}\"", self.node_name());
+                        self.forward(Token::RETRIEVED(key, value.clone()), RouteType::BROADCAST).unwrap();
+                    } else if self.id.is_some_and(|id| get_node_in_charge(&key, ring_size) == id) {
+                        // value not found
+                        debug!("{} could not find \"{key}\"", self.node_name());
+                    } else {
+                        debug!("{} forwards loading \"{key}\"", self.node_name());
+                        self.forward(Token::RETRIEVE(key), RouteType::INTERNAL).unwrap();
+                    }
+                }
+                Token::RETRIEVED(key, value) => {
+                    if !self.id.is_some_and(|id| get_node_in_charge(&key, ring_size) == id) {
+                        self.forward(Token::RETRIEVED(key, value), RouteType::BROADCAST).unwrap();
                     }
                 }
                 _ => {

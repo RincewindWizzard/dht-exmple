@@ -35,9 +35,22 @@ fn main() {
     thread::sleep(Duration::from_millis(1000));
 
     let (tx, rx) = node.channel();
-    for i in 0..node_count {
-        node.ping(i).unwrap();
+    //for i in 0..node_count {
+    //    node.ping(i).unwrap();
+    //}
+
+    for i in 1..10 {
+        node.store(format!("key[{i}]"), format!("doc[{i}]")).unwrap();
     }
+
+    thread::sleep(Duration::from_millis(1000));
+
+    for i in 1..10 {
+        node.load(format!("key[{i}]")).unwrap();
+    }
+
+
+    thread::sleep(Duration::from_millis(1000));
     node.shutdown().unwrap();
 
     thread::sleep(Duration::from_millis(1000));
